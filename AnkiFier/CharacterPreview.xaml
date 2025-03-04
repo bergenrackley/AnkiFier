@@ -1,0 +1,19 @@
+﻿<Window x:Class="AnkiFier.CharacterPreview"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="OCR Results" Height="600" Width="800">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <TextBox Name="Status" Grid.Row="0" Grid.Column="0" Height="20" Width="200" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="10" IsEnabled="False"/>
+        <Button Name="SaveJsonButton" Click="SaveJson_OnClick" Grid.Row="0" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="10" Padding="5">Save as Json</Button>
+        <Button Name="SaveCSVButton" Click="SaveCSV_OnClick" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="10" Padding="5">Save as CSV</Button>
+        <DataGrid Name="VocabularyGrid" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" AutoGenerateColumns="True" Margin="10 0 10 10"/>
+    </Grid>
+</Window>
