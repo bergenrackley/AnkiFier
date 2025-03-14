@@ -13,6 +13,7 @@
         </Grid.RowDefinitions>
         <TextBox Name="Status" Grid.Row="0" Grid.Column="0" Height="20" Width="200" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="10" IsEnabled="False"/>
         <Button Name="SaveJsonButton" Click="SaveJson_OnClick" Grid.Row="0" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="10" Padding="5">Save as Json</Button>
+        <Button Name="ParseKanjiButton" Click="ParseKanji_OnClick" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10" Padding="5">Parse Kanji</Button>
         <Button Name="SaveCSVButton" Click="SaveCSV_OnClick" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="10" Padding="5">Save as CSV</Button>
         <DataGrid Name="VocabularyGrid" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" AutoGenerateColumns="True" Margin="10 0 10 10"/>
     </Grid>

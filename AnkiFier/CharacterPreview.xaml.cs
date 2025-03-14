@@ -39,6 +39,9 @@ using System.Collections;
 using System.Data.Common;
 using System.Drawing;
 using System.Configuration;
+using System.Text.Json.Nodes;
+using Accord.Math;
+using System.Globalization;
 
 namespace AnkiFier
 {
@@ -47,6 +50,9 @@ namespace AnkiFier
         private string AzureOpenAISubscriptionKey;
         private string AzureOpenAIEndpoint;
         private string AzureOpenAIModel;
+        private string WaniKaniAPIKey;
+        private static readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
+        private static readonly int _delayBetweenRequests = 1000 * 60 / 58; // 1200 ms delay to ensure 50 requests per minute
 
         private List<Vocabulary> vocabulary = new List<Vocabulary>();
 
@@ -68,17 +74,33 @@ namespace AnkiFier
             InitializeComponent();
             try
             {
-                Status.Text = "Loaded from JSON!";
                 string jsonText = System.IO.File.ReadAllText(jsonPath);
-                vocabulary = JsonConvert.DeserializeObject<List<Vocabulary>>(jsonText);
-                VocabularyGrid.ItemsSource = null;
-                VocabularyGrid.ItemsSource = vocabulary;
+                ShowVocab(JsonConvert.DeserializeObject<List<Vocabulary>>(jsonText));
+                Status.Text = "Loaded from JSON!";
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Information);
                 this.Close();
             }
+        }
+
+        private async void ShowVocab(List<Vocabulary> vocabArray = null)
+        {
+            if (vocabArray != null) vocabulary = vocabArray;
+
+            //List<Vocabulary> parsedKanji = new List<Vocabulary>();
+
+            //var kanjiCharacters = vocabulary
+            //    .SelectMany(x => x.Kanji.ToCharArray()) // Split .Kanji into characters
+            //    .Where(c => ContainsKanji(c.ToString())) // Filter for Kanji characters
+            //    .Distinct() // Get unique Kanji characters
+            //    .ToList();
+
+            //foreach (var c in kanjiCharacters) parsedKanji.Add(await GetWaniKani(c.ToString(), "kanji"));
+
+            VocabularyGrid.ItemsSource = null;
+            VocabularyGrid.ItemsSource = vocabulary;
         }
 
         private void GroupTextByCells(string imageFilePath, List<JObject> lines, List<System.Drawing.Rectangle> cells)
@@ -287,13 +309,8 @@ namespace AnkiFier
                     {
                         JArray jsonArray = JArray.Parse(rawResponse);
                         System.IO.File.WriteAllText("cleanedoutput.json", jsonArray.ToString(Formatting.Indented));
-                        //MessageBox.Show(jsonArray.ToString(), "Parsed JSON Response");
-
-                        vocabulary = jsonArray.ToObject<List<Vocabulary>>();
-                        VocabularyGrid.ItemsSource = null;
-                        VocabularyGrid.ItemsSource = vocabulary;
+                        ShowVocab(jsonArray.ToObject<List<Vocabulary>>());
                         Status.Text = "Done!";
-
                     }
                     catch (JsonReaderException ex)
                     {
@@ -311,63 +328,81 @@ namespace AnkiFier
             }
         }
 
-        private async void BoundingBox_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        static bool ContainsKanji(string input)
         {
-            if (sender is Rectangle rect && rect.Tag is string detectedText)
-            {
-                JObject wanikani = await GetWaniKani(detectedText, "kanji");
-                if (wanikani != new JObject() && (wanikani["data"] as JArray).Any())
-                {
-
-                    List<String> radicals = new List<String>();
-                    foreach (int id in wanikani["data"][0]["data"]["component_subject_ids"] as JArray)
-                    {
-                        JObject radical = await GetWaniKaniById(id);
-                        Trace.TraceInformation(radical.ToString());
-                        radicals.Add(radical["data"]["characters"].ToString() ?? radical["data"]["character_images"][0]["url"].ToString());
-                    }
-
-                    MessageBox.Show($"{String.Join(", ", wanikani["data"][0]["data"]["meanings"].Select(e => e["meaning"]).ToList())}\n{String.Join(", ", radicals)}\n{wanikani["data"][0]["data"]["meaning_mnemonic"]}\n{wanikani["data"][0]["data"]["reading_mnemonic"]}", "Bounding Box Clicked", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-            }
+            return input.Any(c => (c >= 0x4E00 && c <= 0x9FAF) || (c >= 0x3400 && c <= 0x4DBF));
         }
 
-        private async Task<JObject> GetWaniKani(string slug, string type)
+        private async Task<Vocabulary> GetWaniKani(string slug, string type)
         {
-            string bearerToken = "c2653456-1c1d-4c02-840a-35e1d45e8ef8";
+            await _semaphore.WaitAsync();
+
+            Trace.TraceInformation($"Searching for slug: {slug}");
             using HttpClient client = new HttpClient();
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", WaniKaniAPIKey);
             HttpResponseMessage response = await client.GetAsync($"https://api.wanikani.com/v2/subjects?slugs={slug.ToLower()}&types={type}");
 
+            await Task.Delay(_delayBetweenRequests);
+            _semaphore.Release();
+
             if (response.IsSuccessStatusCode)
             {
                 string jsonResponse = await response.Content.ReadAsStringAsync();
-                return JObject.Parse(jsonResponse);
+                JObject responseObject = JObject.Parse(jsonResponse);
+                if (responseObject["data"].Any())
+                {
+                    string meanings = String.Join(", ", responseObject["data"][0]["data"]["meanings"].Select(m => m["meaning"].ToString()));
+                    string readings = String.Join(", ", responseObject["data"][0]["data"]["readings"].Select(m => m["reading"].ToString()));
+                    string meaning_mnemonic = responseObject["data"][0]["data"]["meaning_mnemonic"].ToString();
+                    string reading_mnemonic = responseObject["data"][0]["data"]["reading_mnemonic"].ToString();
+                    string radicals = String.Join(", ", (await Task.WhenAll(responseObject["data"][0]["data"]["component_subject_ids"].Select(c => GetWaniKaniById(int.Parse(c.ToString()))))).Select(result => result.ToString()));
+
+                    Trace.TraceInformation($"Found {slug}");
+
+                    return new Vocabulary
+                    {
+                        Kanji = slug,
+                        Definition = meanings,
+                        Radicals = radicals,
+                        Japanese = readings,
+                        MeaningMnemonic = meaning_mnemonic,
+                        ReadingMnemonic = reading_mnemonic,
+                    };
+                }
             }
             else
             {
                 Trace.TraceError($"Failed to fetch data. Status code: {response.StatusCode}");
-                return new JObject();
             }
-        }
 
-        private async Task<JObject> GetWaniKaniById(int id)
+            return new Vocabulary();
+        }
+        private async Task<String> GetWaniKaniById(int id)
         {
-            string bearerToken = "c2653456-1c1d-4c02-840a-35e1d45e8ef8";
+            await _semaphore.WaitAsync();
+
+            Trace.TraceInformation($"Searching for id: {id}");
             using HttpClient client = new HttpClient();
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", WaniKaniAPIKey);
             HttpResponseMessage response = await client.GetAsync($"https://api.wanikani.com/v2/subjects/{id}");
 
+            await Task.Delay(_delayBetweenRequests);
+            _semaphore.Release();
+
             if (response.IsSuccessStatusCode)
             {
                 string jsonResponse = await response.Content.ReadAsStringAsync();
-                return JObject.Parse(jsonResponse);
+                JObject responseObject = JObject.Parse(jsonResponse);
+                if (responseObject["data"].Any())
+                {
+                    return String.IsNullOrEmpty(responseObject["data"]["characters"].ToString()) == false ? responseObject["data"]["characters"].ToString() : responseObject["data"]["character_images"].Where(i => i["metadata"]["style_name"].ToString() == "original").First()["url"].ToString();
+                }
             }
             else
             {
                 Trace.TraceError($"Failed to fetch data. Status code: {response.StatusCode}");
-                return new JObject();
             }
+            return null;
         }
 
         private void SaveJson_OnClick(object sender, RoutedEventArgs e)
@@ -415,7 +450,7 @@ namespace AnkiFier
                 // Loop through each vocab item and add it as a CSV row
                 foreach (Vocabulary vocab in VocabularyGrid.ItemsSource)
                 {
-                    csv.AppendLine($"{EscapeCsv(vocab.japanese)},{EscapeCsv(vocab.kanji)},{EscapeCsv(vocab.romaji)},{EscapeCsv(vocab.definition)}");
+                    csv.AppendLine($"{EscapeCsv(vocab.Japanese)},{EscapeCsv(vocab.Kanji)},{EscapeCsv(vocab.Romaji)},{EscapeCsv(vocab.Definition)},{EscapeCsv(vocab.Radicals)},{EscapeCsv(vocab.MeaningMnemonic)},{EscapeCsv(vocab.ReadingMnemonic)}");
                 }
 
                 // Save document
@@ -441,5 +476,38 @@ namespace AnkiFier
             return field;
         }
 
+        private async void ParseKanji_OnClick(object sender, RoutedEventArgs e)
+        {
+            WaniKaniAPIKey = ConfigurationManager.AppSettings["WaniKaniAPIKey"].ToString();
+            ParseKanjiButton.IsEnabled = SaveCSVButton.IsEnabled = SaveJsonButton.IsEnabled = false;
+            Status.Text = "Parsing Kanji with WaniKani...";
+            List<Vocabulary> parsedKanji = new List<Vocabulary>();
+
+            var kanjiCharacters = vocabulary
+                .SelectMany(x => x.Kanji.ToCharArray()) // Split .Kanji into characters
+                .Where(c => ContainsKanji(c.ToString())) // Filter for Kanji characters
+                .Distinct() // Get unique Kanji characters
+                .ToList();
+
+            foreach (var c in kanjiCharacters.Select(c => c.ToString()))
+            {
+                Status.Text = $"Parsing Kanji {c} with WaniKani...";
+                parsedKanji.Add(await GetWaniKani(c, "kanji"));
+                var existingKanji = vocabulary.Where(v => v.Kanji == c).FirstOrDefault();
+                if (existingKanji == null) vocabulary.Add(parsedKanji.Last());
+                else
+                {
+                    existingKanji.Japanese = String.Join(", ", parsedKanji.Last().Japanese, existingKanji.Japanese);
+                    existingKanji.Definition = String.Join(", ", parsedKanji.Last().Definition, existingKanji.Definition);
+                    existingKanji.Radicals = parsedKanji.Last().Radicals;
+                    existingKanji.MeaningMnemonic = parsedKanji.Last().MeaningMnemonic;
+                    existingKanji.ReadingMnemonic = parsedKanji.Last().ReadingMnemonic;
+                }
+                ShowVocab();
+            }
+
+            Status.Text = "Done!";
+            ParseKanjiButton.IsEnabled = SaveCSVButton.IsEnabled = SaveJsonButton.IsEnabled = true;
+        }
     }
 }
